@@ -49,7 +49,7 @@ const storage = multer.diskStorage({
         const maxId = String(req.maxRestaurantId); // Incrementing to use as the new restaurantId
         console.log("Max ID:", maxId);
         const fileExtension = path.extname(file.originalname);
-        cb(null, maxId + "/"+ maxId + fileExtension);
+        cb(null, maxId + "/"+ file.originalname);
     }
 });
 
@@ -159,9 +159,10 @@ app.post("/resadd", async (req, res) => {
     const { short_desc } = req.body;
     const { nit } = req.body;
     const { menu } = req.body;
+    const { logoname } = req.body;
     const {id} =req.body
-    const newRes = await pool.query("INSERT INTO public.restaurants(restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, userid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *",
-        [restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu,id ]);
+    const newRes = await pool.query("INSERT INTO public.restaurants(restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, userid, logo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
+        [restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, id, logoname ]);
     const insertedId = newRes.rows[0].restaurantid;
     res.json({ restaurantId: insertedId });
     console.log(insertedId);
