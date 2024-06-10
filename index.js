@@ -35,8 +35,8 @@ app.use(express.json());
 // Middleware to get the max restaurantId
 async function getMaxRestaurantId(req, res, next) {
     try {
-        const result = await pool.query('SELECT MAX(restaurantid) AS maxid FROM public.restaurants');
-        const maxId = result.rows[0].maxid;
+        const result = await pool.query('SELECT restaurantid FROM public.restaurants ORDER BY Modified_date DESC LIMIT 1');
+        const maxId = result.rows[0].restaurantid;
         req.maxRestaurantId = maxId;
         console.log("Max ID print:", maxId);
 
@@ -95,6 +95,70 @@ app.post('/login', async (req, res) => {
     }
 });
 
+
+
+app.post('/verify', async (req, res) => {
+    const { email, phone } = req.body;
+  
+    // Check if both email and phone number are provided
+    if (!email || !phone) {
+      return res.status(400).json({ 'message': 'Email and phone number are required.' });
+    }
+  
+    try {
+      // Query the database for a user with the provided email and phone number
+      const foundUser = await pool.query(`
+        SELECT userid, useremail, phone
+        FROM public.users
+        WHERE useremail = $1 AND phone = $2;
+      `, [email, phone]);
+  
+      // If a user is found, the user can proceed to reset their password
+      if (foundUser.rowCount > 0) {
+        // You might want to implement additional security measures here,
+        // like sending a verification code to the user's email or phone
+        res.json({ 'message': 'User verified. Proceed to reset password.' });
+      } else {
+        // If no user is found, return an unauthorized status
+        res.status(401).json({ 'message': 'No matching user found.' });
+      }
+    } catch (error) {
+      console.error("Error verifying user:", error);
+      res.status(500).json({ 'message': 'Server error during user verification.' });
+    }
+  });
+  
+
+  app.post('/resetpass', async (req, res) => {
+    const { email, phone, newPassword } = req.body;
+  
+    if (!email || !newPassword) {
+      return res.status(400).json({ 'message': 'Email and new password are required.' });
+    }
+  
+    try {
+      // Encrypt the new password
+      const hashedPwd = await bcrypt.hash(newPassword, 10);
+  
+      // Update the user's password in the database
+      const updateUser = await pool.query(
+        "UPDATE public.users SET password = $1 WHERE useremail = $2 AND phone = $3 RETURNING *",
+        [hashedPwd, email, phone]
+      );
+  
+      if (updateUser.rows.length === 0) {
+        return res.status(404).json({ 'message': 'User not found or details do not match.' });
+      }
+  
+      // Success response
+      res.json({ 'message': `Password updated successfully for ${email}.` });
+    } catch (err) {
+      console.error('Error updating password:', err.message);
+      res.status(500).json({ 'message': 'Error updating password. Please try again.' });
+    }
+  });
+
+
 const storage = multer.diskStorage({
     destination: './public/Images/restaurants',
     filename: function(req, file, cb) {
@@ -115,6 +179,8 @@ app.post('/upload', getMaxRestaurantId, upload.single('image'), (req, res) => {
         res.status(400).send("No file uploaded.");
     }
 });
+
+
 
 
 
@@ -177,6 +243,37 @@ app.post('/foodadd', foodImageUpload, async (req, res) => {
     }
 });
 
+//This has to be updated in the server.
+
+app.put('/updatefood/:foodid', foodImageUpload, async (req, res) => {
+    const { foodid } = req.params;
+    const { restaurantId, foodName, foodType, foodCategory, foodDesc, foodPrice } = req.body;
+    const foodImage = req.file ? req.file.filename : null;
+  
+    try {
+      // Check if the food item exists
+      const foodItem = await pool.query('SELECT * FROM public.food WHERE foodid = $1', [foodid]);
+  
+      if (foodItem.rows.length === 0) {
+        return res.status(404).json({ error: 'Food item not found' });
+      }
+  
+      // Update the food item
+      const updatedFood = await pool.query(
+        `UPDATE public.food
+         SET restaurantid = $1, foodname = $2, foodtype = $3, foodcategory = $4, price = $5, description = $6, image = $7
+         WHERE foodid = $8
+         RETURNING *`,
+        [restaurantId, foodName, foodType, foodCategory, foodPrice, foodDesc, foodImage, foodid]
+      );
+  
+      res.json(updatedFood.rows[0]);
+    } catch (err) {
+      console.error(err.message);
+      res.status(500).send('Error updating food item');
+    }
+  });
+
 
 
 
@@ -212,9 +309,10 @@ app.post("/resadd", async (req, res) => {
     const { nit } = req.body;
     const { menu } = req.body;
     const { logoname } = req.body;
-    const {id} =req.body
-    const newRes = await pool.query("INSERT INTO public.restaurants(restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, userid, logo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
-        [restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, id, logoname ]);
+    const {userid} =req.body;
+    const {pet_friendly} =req.body
+    const newRes = await pool.query("INSERT INTO public.restaurants(restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, userid, logo, pet_friendly) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+        [restaurantname, address, phone, scheduler, city, webpage, short_desc, nit, menu, userid, logoname, pet_friendly ]);
     const insertedId = newRes.rows[0].restaurantid;
     res.json({ restaurantId: insertedId });
     console.log(insertedId);
@@ -292,53 +390,47 @@ app.get('/getUser', (req, res) => {
 
 
 //This have to be updated in the back-end
-app.get('/restaurants-with-likes', async (req, res) => {
-    if (!req.session.user) {
-        return res.status(401).send('Unauthorized');
-    }
 
-    try {
-        const userId = req.session.user.id;
-        const restaurantsWithLikes = await pool.query(`
-            SELECT r.*, 
-                   CASE WHEN l.userid IS NOT NULL THEN TRUE ELSE FALSE END as is_favorite
-            FROM public.restaurants r
-            LEFT JOIN public.likes l ON r.restaurantid = l.restaurantid AND l.userid = $1;
-        `, [userId]);
-
-        res.json(restaurantsWithLikes.rows);
-    } catch (error) {
-        console.error('Error fetching restaurants with likes:', error);
-        res.status(500).send('Internal Server Error');
-    }
-});
 
 
 
 //This has to be changed in the server
 app.get("/res", async (req, res) => {
-    const userId = req.session.user ? req.session.user.id : null;
+    const userId = req.query.userid ? req.query.userid : null; // Get userid from query parameters
+    const searchQuery = req.query.query ? req.query.query.toLowerCase() : ''; // Get search query from query parameters
 
     try {
         const restaurants = await pool.query(`
-            SELECT 
-                r.*, 
-                CASE WHEN l.userid IS NOT NULL THEN true ELSE false END AS is_favorite,
-                STRING_AGG(f.foodcategory, ', ') AS food_categories,
-                ROUND((AVG(s.ratingfood) + AVG(s.ratingservice) + AVG(s.ratingenvironment)) / 3, 1) AS overall_average
-            FROM 
-                public.restaurants r
-            LEFT JOIN 
-                public.food f ON r.restaurantid = f.restaurantid
-            LEFT JOIN 
-                public.surveys s ON r.restaurantid = s.restaurantid
-            LEFT JOIN 
-                public.likes l ON r.restaurantid = l.restaurantid AND l.userid = $1
-            GROUP BY 
-                r.restaurantid, l.userid
-            ORDER BY
-                overall_average DESC;
-        `, [userId]);
+        SELECT 
+            r.*, 
+            CASE 
+                WHEN l.userid IS NOT NULL THEN true 
+                ELSE false 
+            END AS is_favorite,
+            STRING_AGG(DISTINCT f.foodcategory, ', ') AS food_categories,
+            STRING_AGG(DISTINCT f.foodname, ', ') AS food_names,
+            ROUND((AVG(s.ratingfood) + AVG(s.ratingservice) + AVG(s.ratingenvironment)) / 3, 1) AS overall_average,
+            MIN(f.price) AS min_price,
+            MAX(f.price) AS max_price,
+            ROUND(CAST(AVG(CASE WHEN f.foodtype = 'Plato Fuerte' THEN f.price ELSE NULL END) AS numeric), 2) AS avg_plato_fuerte_price,
+            COUNT(s.surveyid) AS total_surveys
+        FROM 
+            public.restaurants r
+        LEFT JOIN 
+            public.food f ON r.restaurantid = f.restaurantid
+        LEFT JOIN 
+            public.surveys s ON r.restaurantid = s.restaurantid
+        LEFT JOIN 
+            public.likes l ON r.restaurantid = l.restaurantid AND l.userid = $1
+        WHERE 
+            unaccent(LOWER(r.restaurantname)) LIKE unaccent($2)
+            OR unaccent(LOWER(f.foodname)) LIKE unaccent($2)
+            OR unaccent(LOWER(r.short_desc)) LIKE unaccent($2)
+        GROUP BY 
+            r.restaurantid, l.userid
+        ORDER BY
+            overall_average DESC NULLS LAST
+        `, [userId, `%${searchQuery}%`]);
         res.json(restaurants.rows);
     } catch (error) {
         console.error("Error fetching restaurants:", error);
@@ -348,30 +440,63 @@ app.get("/res", async (req, res) => {
 
 
 
-app.post("/toggle-like", async (req, res) => {
-    if (!req.session.user) {
-        return res.sendStatus(401); // Unauthorized if not logged in
-    }
 
-    const { restaurantId } = req.body;
-    const userId = req.session.user.id;
+
+
+app.get("/allusers", async (req, res) => {
+    try {
+        const allusers = await pool.query(`
+        SELECT userid, username, city, useremail
+        FROM public.users;
+        `);
+        res.json(allusers.rows);
+    } catch (error) {
+        console.error("Error fetching restaurants:", error);
+        res.status(500).send("Server error");
+    }
+});
+
+app.post('/ownerUpdate', async (req, res) => {
+    const { userid, restaurantId } = req.body;
+    console.log (req.body);
+    try {
+        const updateQuery = 'UPDATE public.restaurants SET userid = $1 WHERE restaurantid = $2';
+        const values = [userid, restaurantId];
+        const result = await pool.query(updateQuery, values);
+        if (result.rowCount > 0) {
+            res.status(200).json({ message: "Restaurant owner updated successfully." });
+        } else {
+            res.status(404).json({ message: "Restaurant not found." });
+        }
+    } catch (error) {
+        console.error('Error updating restaurant owner:', error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+
+
+
+
+app.post("/toggle-like", async (req, res) => {
+    const { restaurantId, userid } = req.body;
 
     try {
         // Check if like already exists
         const existingLike = await pool.query(`
             SELECT * FROM public.likes WHERE userid = $1 AND restaurantid = $2;
-        `, [userId, restaurantId]);
+        `, [userid, restaurantId]);
 
         if (existingLike.rowCount > 0) {
             // Remove like
             await pool.query(`
                 DELETE FROM public.likes WHERE userid = $1 AND restaurantid = $2;
-            `, [userId, restaurantId]);
+            `, [userid, restaurantId]);
         } else {
             // Add like
             await pool.query(`
                 INSERT INTO public.likes (userid, restaurantid) VALUES ($1, $2);
-            `, [userId, restaurantId]);
+            `, [userid, restaurantId]);
         }
 
         res.json({ message: 'Toggle like successful' });
@@ -454,6 +579,54 @@ app.get("/res/:id", async (req, res) => {
         console.log(err.message);
     }
 });
+
+
+// Update an existing restaurant
+app.put("/resupdate/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { restaurantname, address, phone, scheduler, city, webpage, short_desc } = req.body;
+        
+        const updateRestaurant = await pool.query(`
+        UPDATE public.restaurants
+        SET restaurantname = $1, address = $2, phone = $3, scheduler = $4, city = $5, webpage = $6, short_desc = $7, Modified_date = CURRENT_TIMESTAMP
+        WHERE restaurantid = $8
+        RETURNING *
+        `, [restaurantname, address, phone, scheduler, city, webpage, short_desc, id]);
+
+        res.json(updateRestaurant.rows[0]);
+        console.log('Entro dijo la muda')
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send("Server error");
+    }
+});
+
+
+
+app.put("/reslogoupdate/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { logoname } = req.body;
+        
+        const updateRestaurant = await pool.query(`
+        UPDATE public.restaurants
+        SET logo = $1
+        WHERE restaurantid = $2
+        RETURNING *
+        `, [logoname, id]);
+
+        res.json(updateRestaurant.rows[0]);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send("Server error");
+    }
+});
+
+
+
+
+
 
 // Get an specific restaurant survey averages
 
